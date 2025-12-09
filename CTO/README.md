@@ -23,11 +23,10 @@ Presentation slides
 https://vblocalhost.com/uploads/2021/09/VB2021-14.pdf
 
 ## Requirements
-- IDA Pro 7.4 or later (I tested on 7.5 SP3 to 7.7 and 8.2 SP1)
-- Python 3.x (I tested on Python 3.8 to 3.11)
+- IDA Pro 7.4 or later (I tested on 7.4 SP1, 8.0, 8.2 SP1, 8.4 SP2, 9.0, 9.0 SP1, 9.1, and 9.2 Beta 3)
+- Python 3.x (I tested on Python 3.8 to 3.12)
 
 You will need at least IDA Pro 7.4 or later because of the APIs that I use.
-And use Python 3.x. It should work on Python 2.7 but I did not test enough and I do not support it because it has already obsoleted and deprecated.
 
 ## Optional 3rd Party Software
 - ironstrings  
@@ -39,15 +38,18 @@ And use Python 3.x. It should work on Python 2.7 but I did not test enough and I
 - findguid.py  
   https://github.com/you0708/ida/tree/master/idapython_tools/findguid
 
-- IDA_Signsrch  
-  https://sourceforge.net/projects/idasignsrch/
-
 - SusanRTTI  
   https://github.com/nccgroup/SusanRTTI
 
+- IDA_Signsrch  
+  https://sourceforge.net/projects/idasignsrch/
+
+- yara4ida  
+  https://github.com/kweatherman/yara4ida
+
 - Class Informer  
   https://sourceforge.net/projects/classinformer/  
-  https://github.com/herosi/classinformer-ida8
+  https://github.com/herosi/classinformer
 
 ## How to Install
 See "[INSTALL](/INSTALL)" file.
@@ -65,7 +67,7 @@ Check the articles showed in the top of this file as well.
 
 ## Note
 CTO is still under development and it is unstable yet. I might change the data structure drastically.
-CTO accesses sensitive internal data structure of IDA such as low level APIs and PyQt5. And it might cause a crash of IDA.
+CTO accesses sensitive internal data structure of IDA such as low level APIs and PyQt5/PySide6. And it might cause a crash of IDA.
 Do not use this in important situations. I don't take responsibility for any damage or any loss caused by the use of this.
 
 I'm not a programmer. I'm a malware analyst. Please do not expect product-level code.
@@ -74,8 +76,4 @@ PRs are welcome. Just complaining and a bug report without enough information ar
 
 ## Known Issues
 - Currently, CTO focuses on Intel x64/x86 architecture. If you want to extend other architectures, please send the PR to me.
-- CTO Function Lister will crash on IDA on Linux for some reasons while it works on Windows. But I can't fix it because I don't have that.
-```
-QSortFilterProxyModel: index from wrong model passed to mapToSource
-```
-- On IDA 7.6 including SP1, you will not be able to use ESC for looking backward location history on CTO’s window because of a bug of IDA. Instead, it will close the CTO window if you press it. It has been fixed on IDA 7.7 or later. Please use them.
+

@@ -165,6 +165,14 @@ def get_QGroupBox():
         import PyQt5.QtWidgets as QtWidgets
         return QtWidgets.QGroupBox
 
+def get_QHeaderView():
+    if is_ida and idaapi.IDA_SDK_VERSION <= 680:
+        import PySide.QtGui as QtGui
+        return QtGui.QHeaderView
+    else:
+        import PyQt5.QtWidgets as QtWidgets
+        return QtWidgets.QHeaderView
+
 def get_QHBoxLayout():
     if is_ida and idaapi.IDA_SDK_VERSION <= 680:
         import PySide.QtGui as QtGui
@@ -196,6 +204,14 @@ def get_QLabel():
     else:
         import PyQt5.QtWidgets as QtWidgets
         return QtWidgets.QLabel
+
+def get_QListView():
+    if is_ida and idaapi.IDA_SDK_VERSION <= 680:
+        import PySide.QtGui as QtGui
+        return QtGui.QListView
+    else:
+        import PyQt5.QtWidgets as QtWidgets
+        return QtWidgets.QListView
 
 def get_QLineEdit():
     if is_ida and idaapi.IDA_SDK_VERSION <= 680:
@@ -334,6 +350,14 @@ def get_QSizePolicy():
         import PyQt5.QtWidgets as QtWidgets
         return QtWidgets.QSizePolicy
 
+def get_QSortFilterProxyModel():
+    if is_ida and idaapi.IDA_SDK_VERSION <= 680:
+        import PySide.QtGui as QtGui
+        return QtGui.QSortFilterProxyModel
+    else:
+        import PyQt5.QtCore as QtCore
+        return QtCore.QSortFilterProxyModel
+
 def get_QSlider():
     if is_ida and idaapi.IDA_SDK_VERSION <= 680:
         import PySide.QtGui as QtGui
@@ -365,6 +389,14 @@ def get_QStandardItem():
     else:
         import PyQt5.QtGui as QtGui
         return QtGui.QStandardItem
+
+def get_QStandardItemModel():
+    if is_ida and idaapi.IDA_SDK_VERSION <= 680:
+        import PySide.QtGui as QtGui
+        return QtGui.QStandardItemModel
+    else:
+        import PyQt5.QtGui as QtGui
+        return QtGui.QStandardItemModel    
 
 def get_QStringListModel():
     if is_ida and idaapi.IDA_SDK_VERSION <= 680:
@@ -562,10 +594,12 @@ QEvent = get_QEvent()
 QFont = get_QFont()
 QFrame = get_QFrame()
 QGroupBox = get_QGroupBox()
+QHeaderView = get_QHeaderView()
 QHBoxLayout = get_QHBoxLayout()
 QIcon = get_QIcon()
 QImage = get_QImage()
 QLabel = get_QLabel()
+QListView = get_QListView()
 QLineEdit = get_QLineEdit()
 QMainWindow = get_QMainWindow()
 QMenu = get_QMenu()
@@ -583,10 +617,12 @@ QRect = get_QRect()
 QScrollArea = get_QScrollArea()
 QSize = get_QSize()
 QSizePolicy = get_QSizePolicy()
+QSortFilterProxyModel = get_QSortFilterProxyModel()
 QSlider = get_QSlider()
 QSpacerItem = get_QSpacerItem()
 QSplitter = get_QSplitter()
 QStandardItem = get_QStandardItem()
+QStandardItemModel = get_QStandardItemModel()
 QStringListModel = get_QStringListModel()
 QStyle = get_QStyle()
 QStyledItemDelegate = get_QStyledItemDelegate()

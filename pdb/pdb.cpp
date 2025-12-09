@@ -37,6 +37,9 @@
 int data_id;
 
 #include "pdb.hpp"
+#define LOAD_TYPES 0x1
+#define LOAD_NAMES 0x2
+
 #include "common.cpp"
 #ifdef ENABLE_REMOTEPDB
 // We only enable remote PDB fetching in case
@@ -213,7 +216,7 @@ static bool ignore_name(const char *name)
     const char *p = &name[5];
     if ( *p != '\0' )
     {
-      for ( ; *p != '\0' && isdigit(*p); ++p )
+      for ( ; *p != '\0' && qisdigit(*p); ++p )
         ;
       if ( *p == '\0' )
         return true;
@@ -224,16 +227,16 @@ static bool ignore_name(const char *name)
   if ( strneq(name, "_lc", 3) )
   {
     const char *p = &name[3];
-    if ( isdigit(p[0])
-      && isdigit(p[1])
-      && isdigit(p[2])
+    if ( qisdigit(p[0])
+      && qisdigit(p[1])
+      && qisdigit(p[2])
       && p[3] == '_'
-      && isdigit(p[4])
-      && isdigit(p[5])
-      && isdigit(p[6])
-      && isdigit(p[7])
-      && isdigit(p[8])
-      && isdigit(p[9])
+      && qisdigit(p[4])
+      && qisdigit(p[5])
+      && qisdigit(p[6])
+      && qisdigit(p[7])
+      && qisdigit(p[8])
+      && qisdigit(p[9])
       && p[10] == '_' )
     {
       return true;
@@ -829,7 +832,7 @@ static uint32 get_machine_from_idb(const processor_t &ph)
   switch ( ph.id )
   {
     case PLFM_ARM:
-      mt = CV_CFL_ARM6;
+      mt = inf_is_64bit() ? CV_CFL_ARM64 : CV_CFL_ARM6;
       break;
     case PLFM_MIPS:
       mt = CV_CFL_MIPSR4000;
@@ -971,8 +974,6 @@ static qstring get_input_path()
 #define ADDRESS_FIELD 10
 #define LOAD_TYPES_FIELD 20
 #define LOAD_NAMES_FIELD 30
-#define LOAD_TYPES 0x1
-#define LOAD_NAMES 0x2
 
 //--------------------------------------------------------------------------
 static int idaapi details_modcb(int fid, form_actions_t &fa)
@@ -1107,26 +1108,24 @@ static bool get_details_from_pe(pdbargs_t *args)
   args->input_path = get_input_path();
   args->loaded_base = penode.altval(PE_ALT_IMAGEBASE);
 
-  static const char formstr[] =
-    "BUTTON YES Yes\n"
-    "BUTTON NO No\n"
+  static const char form[] =
+    "BUTTON YES ~Y~es\n"
+    "BUTTON NO ~N~o\n"
     "BUTTON CANCEL NONE\n"
     "Load PDB file\n"
     "The input file was linked with debug information stored here:\n"
-    "\"%s\"\n"
+    "%q\n"
     "Do you want to look for this file at the specified path\n"
     "and the Microsoft Symbol Server?\n"
     "<#Load types#Load ~t~ypes:C10>\n"
-    "<#Load names#Load ~n~ames:C20>>\n";
-
-  qstring form;
-  form.sprnt(formstr, args->pdb_path.c_str());
+    "<#Load names#Load n~a~mes:C20>>\n";
 
   sval_t load_options = 0;
   setflag(load_options, LOAD_TYPES, (args->flags & PDBFLG_LOAD_TYPES) != 0);
   setflag(load_options, LOAD_NAMES, (args->flags & PDBFLG_LOAD_NAMES) != 0);
 
-  int res = ask_form(form.begin(), &load_options);
+  qstring *pdb_path = &args->pdb_path;
+  int res = ask_form(form, pdb_path, &load_options);
   if ( res != 1 )
     return false;
 
@@ -1246,12 +1245,13 @@ LOAD_PDB:
   {
     // Now all information is loaded into the database (except names)
     // We are ready to use names.
+    show_wait_box("Loading names ...");
     int counter = 0;
     for ( namelist_t::iterator p=namelist.begin(); p != namelist.end(); ++p )
     {
       ea_t ea = p->first;
       // do not override name for COFF file
-      if ( pdbargs.is_pdbfile() || !has_name(get_flags(ea)) )
+      if ( pdbargs.is_pdbfile() || !has_name(get_flags32(ea)) )
       {
         if ( pdbargs.is_dbg_module() )
           counter += set_debug_name(ea, p->second.c_str());
@@ -1259,9 +1259,13 @@ LOAD_PDB:
           counter += force_name(ea, p->second.c_str());
       }
       // Every now & then, make sure the UI has had a chance to refresh.
-      if ( (counter % 10) == 0 )
-        user_cancelled();
+      if ( (counter % 10 == 0) && user_cancelled() )
+      {
+        ok = false;
+        break;
+      }
     }
+    hide_wait_box();
     namelist.clear();
     msg("PDB: total %d symbol%s loaded for \"%s\"\n",
         counter,

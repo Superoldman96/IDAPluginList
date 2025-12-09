@@ -17,7 +17,12 @@ import ida_idp
 import ida_strlist
 import ida_segment
 import ida_entry
-import ida_struct
+try:
+    import ida_struct
+    get_struc_name = ida_struct.get_struc_name
+except ModuleNotFoundError:
+    get_struc_name = idc.get_struc_name
+    
 
 import inspect
 import os
@@ -28,10 +33,9 @@ import cProfile
 import pstats
 import io
 
-import tinfo
-import jump
-ida_idaapi.require("tinfo")
-ida_idaapi.require("jump")
+ida_idaapi.require("cto")
+ida_idaapi.require("cto.tinfo")
+ida_idaapi.require("cto.jump")
 
 g_max_recursive = 100
 if "g_debug" not in globals():
@@ -144,6 +148,25 @@ def is_ea_in_func(target_ea, bbs):
             return True
     return False
 
+# for IDA 7.x
+def get_code_items_with_fii(func):
+    if not func:
+        return
+    fii = ida_funcs.func_item_iterator_t()
+    ok = fii.set(func)
+    while ok:
+        yield fii.current()
+        ok = fii.next_code()
+
+def get_code_items(f):
+    try:
+        code_items = f.code_items()
+    except AttributeError:
+        code_items = get_code_items_with_fii(f)
+    
+    for ea in code_items:
+        yield ea
+
 FT_UNK = 0    # unknown
 FT_GEN = 1    # for general internal calls
 FT_LIB = 2    # for static linked libraries
@@ -192,7 +215,7 @@ def get_func_type(func_ea, import_eas=None, func_type=FT_UNK, offset=False):
         if not fn:
             fn = ida_name.get_name(func_ea)
     
-        if fn and tinfo.get_tinfo_by_name(fn):
+        if fn and cto.tinfo.get_tinfo_by_name(fn):
             func_type = FT_API
     
     return func_type
@@ -201,15 +224,15 @@ def get_func_info_by_name(name):
     func_type = FT_UNK
     func_name = ""
     func_ea = ida_idaapi.BADADDR
-    ret = tinfo.get_tinfo_by_name(name)
+    ret = cto.tinfo.get_tinfo_by_name(name)
     if ret:
         # for APIs
         func_name = name
         func_type = FT_API
         func_ea = idc.get_name_ea_simple(func_name)
     else:
-        for n in tinfo.guess_true_names(name):
-            ret = tinfo.get_tinfo_by_name(n)
+        for n in cto.tinfo.guess_true_names(name):
+            ret = cto.tinfo.get_tinfo_by_name(n)
             if ret:
                 # for APIs
                 func_name = n
@@ -221,7 +244,7 @@ def get_func_info_by_name(name):
     if ret:
         return func_name, func_type, func_ea
     
-    ret = tinfo.get_local_tinfo_by_name(name)
+    ret = cto.tinfo.get_local_tinfo_by_name(name)
     if ret:
         # for a general function with its function definition
         func_ea = idc.get_name_ea_simple(func_name)
@@ -354,7 +377,7 @@ def get_offset_fptr(v):
         #.data:00007FF9648576A8 ; void __stdcall __noreturn FreeLibraryAndExitThread(HMODULE hLibModule, DWORD dwExitCode)
         #.data:00007FF9648576A8 FreeLibraryAndExitThread dq ?  
         else:
-            tif = tinfo.get_tinfo(v)
+            tif = cto.tinfo.get_tinfo(v)
             if tif:
                 target_ea = v
     elif ida_bytes.is_dword(flags):
@@ -365,7 +388,7 @@ def get_offset_fptr(v):
         #.data:00007FF9648576A8 ; void __stdcall __noreturn FreeLibraryAndExitThread(HMODULE hLibModule, DWORD dwExitCode)
         #.data:00007FF9648576A8 FreeLibraryAndExitThread dq ?  
         else:
-            tif = tinfo.get_tinfo(v)
+            tif = cto.tinfo.get_tinfo(v)
             if tif:
                 target_ea = v
     return target_ea
@@ -461,7 +484,7 @@ def get_str(ea, v, string_eas):
         data_type = FT_STR
         data = string_eas[v][1]
     if data_type == FT_VAR:
-        ln, lnnum, keyidx = jump.get_line_no(v, "::`vftable'", chk_cmt=True)
+        ln, lnnum, keyidx = cto.jump.get_line_no(v, "::`vftable'", chk_cmt=True)
         n = ida_name.get_name(v)
         if ln:
             data_type = FT_VTB
@@ -529,7 +552,7 @@ def get_funcptr_ea(ea, import_eas, string_eas):
                     yield target_ea, func_type, i, func_name
                 # mov     dword ptr [esi], offset off_404370 -> sub_xxxxxxxxxxxx
                 elif target_ea != ida_idaapi.BADADDR and target_ea != v:
-                    ln, lnnum, keyidx = jump.get_line_no(v, "::`vftable'", chk_cmt=True)
+                    ln, lnnum, keyidx = cto.jump.get_line_no(v, "::`vftable'", chk_cmt=True)
                     n = ida_name.get_name(v)
                     if ln:
                         target_ea = v
@@ -576,7 +599,7 @@ def get_funcptr_ea(ea, import_eas, string_eas):
                     yield target_ea, func_type, i, func_name
                 # lea     rdi, off_7FF96484ABF8 -> sub_xxxxxxxxxxxx
                 elif target_ea != ida_idaapi.BADADDR and target_ea != v:
-                    ln, lnnum, keyidx = jump.get_line_no(v, "::`vftable'", chk_cmt=True)
+                    ln, lnnum, keyidx = cto.jump.get_line_no(v, "::`vftable'", chk_cmt=True)
                     n = ida_name.get_name(v)
                     if ln:
                         target_ea = v
@@ -818,7 +841,7 @@ def get_children(f, import_eas, string_eas):
     if f is None:
         return result, apicalls, gvars, strings, stroff, vtbl
     
-    for ea in f.code_items():
+    for ea in get_code_items(f):
         for target_ea, func_type, op, target_name in get_funcptr_ea(ea, import_eas, string_eas):
             if target_ea != ida_idaapi.BADADDR:
                 result[ea] = (target_ea, func_type, op, target_name)
@@ -982,7 +1005,7 @@ def get_dref_belong_to_func(ea, vtbl_refs, dref_recursive=True, debug=False, dbg
                     if ida_bytes.is_code(flags):
                         if debug: dbg_print("!!!!!! data, code", hex(next_next_ea).rstrip("L"), hex(ida_idaapi.BADADDR).rstrip("L"), hex(next_ea).rstrip("L"))
                         yield next_next_ea, ida_idaapi.BADADDR, next_ea
-                    elif dref_recursive and not ida_struct.get_struc_name(next_next_ea):
+                    elif dref_recursive and not get_struc_name(next_next_ea):
                         if debug: dbg_print("!!!!!! data, data", hex(next_next_ea).rstrip("L"), hex(ida_idaapi.BADADDR).rstrip("L"), hex(next_ea).rstrip("L"))
                         yield next_ea, next_next_ea, ida_idaapi.BADADDR
                     else:
@@ -1041,7 +1064,7 @@ def get_dref_from_belong_to_func(ea, dref_recursive=True, debug=False, dbg_print
                     if ida_bytes.is_code(flags):
                         if debug: dbg_print("!!!!!! data, code", hex(next_next_ea).rstrip("L"), hex(ida_idaapi.BADADDR).rstrip("L"), hex(next_ea).rstrip("L"))
                         yield next_next_ea, ida_idaapi.BADADDR, next_ea
-                    elif dref_recursive and (not ida_struct.get_struc_name(next_next_ea) or ida_bytes.is_strlit(flags)):
+                    elif dref_recursive and (not get_struc_name(next_next_ea) or ida_bytes.is_strlit(flags)):
                         if debug: dbg_print("!!!!!! data, data", hex(next_ea).rstrip("L"), hex(next_next_ea).rstrip("L"), hex(ea).rstrip("L"))
                         if ida_bytes.is_code(ea_flags):
                             yield next_ea, next_next_ea, ea
@@ -1050,7 +1073,7 @@ def get_dref_from_belong_to_func(ea, dref_recursive=True, debug=False, dbg_print
                     else:
                         if debug: dbg_print("not yield data, data", "next_next_ea:", hex(next_next_ea).rstrip("L"), "next_ea:", hex(next_ea).rstrip("L"), "ea:", hex(ea).rstrip("L"))
             # next_drefs list is empty but need to yield for next_ea
-            if len(next_drefs) == 0 and (not ida_struct.get_struc_name(next_ea) or ida_bytes.is_strlit(flags)):
+            if len(next_drefs) == 0 and (not get_struc_name(next_ea) or ida_bytes.is_strlit(flags)):
                 if debug: dbg_print("!!!!!! data, not for next ea", "next_ea:", hex(next_ea).rstrip("L"), "ea:", hex(ea).rstrip("L"))
                 yield ea, next_ea, ida_idaapi.BADADDR
 
@@ -1148,7 +1171,7 @@ def get_cmts_in_func(func_ea, regexes_rpt=None, regexes=None):
         if rcmt and not is_matched(rcmt, regexes_rpt):
             result['rcmt'][func_ea] = rcmt
         return result
-    for ea in f.code_items():
+    for ea in get_code_items(f):
         rcmt = ida_bytes.get_cmt(ea, True)
         cmt = ida_bytes.get_cmt(ea, False)
         if cmt and is_matched(cmt, regexes):
@@ -1305,7 +1328,7 @@ def drefs_wrapper(drefs, func_relations, direction, vtbl_refs, dref_recursive=Tr
             if debug: dbg_print("yield offset item", "ea:", hex(ea), "func_ea:", hex(func_ea), "dref_off_ea:", hex(dref_off_ea), "func_type:", func_type)
             yield (ea, func_ea, dref_off_ea, func_type)
         # struct member
-        elif func_ea != ea and func_ea != ida_idaapi.BADADDR and ea != ida_idaapi.BADADDR and ida_struct.get_struc_name(func_ea):
+        elif func_ea != ea and func_ea != ida_idaapi.BADADDR and ea != ida_idaapi.BADADDR and get_struc_name(func_ea):
             if func_type == FT_UNK:
                 func_type = FT_VAR
             if debug: dbg_print("yield struct member item", "ea:", hex(ea), "func_ea:", hex(func_ea), "dref_off_ea:", hex(dref_off_ea), "func_type:", func_type)
@@ -1345,7 +1368,7 @@ def get_drefs(func_ea, ea, direction, vtbl_refs, debug=False, dbg_print_func=Non
     return drefs
 
 def _append_result(result, next_ea, next_func_ea, next_func_type, dref_off_ea, direction, func_relations, append_exceeded=False):
-    if ida_struct.get_struc_name(dref_off_ea):
+    if get_struc_name(dref_off_ea):
         result.append((next_ea, next_func_ea, next_func_type))
     elif dref_off_ea != ida_idaapi.BADADDR and next_func_ea != ida_idaapi.BADADDR and dref_off_ea != next_func_ea:
         next_next_func_type = next_func_type
@@ -1384,7 +1407,7 @@ def append_result(result, next_ea, next_func_ea, next_func_type, dref_off_ea, di
 def _pop_result(result, next_ea, next_func_ea, next_func_type, dref_off_ea, direction, append_exceeded=False):
     result.pop(-1)
     if dref_off_ea != ida_idaapi.BADADDR and next_func_ea != ida_idaapi.BADADDR and dref_off_ea != next_func_ea:
-        if not ida_struct.get_struc_name(dref_off_ea):
+        if not get_struc_name(dref_off_ea):
             result.pop(-1)
     if append_exceeded:
         result.pop(-1)
@@ -1726,12 +1749,12 @@ def trace_func_calls(func_relations, ea, func_ea=ida_idaapi.BADADDR, target_ea=i
                             if len(next_drefs) == 0:
                                 if debug: dbg_print("***NOT*** append result:", "ea:", hex(next_ea).rstrip("L"), "func_ea:", hex(next_func_ea).rstrip("L"), func_type)
                                 # complete recursive tracing and yield result
-                                if direction == "children" and (not ida_struct.get_struc_name(next_func_ea) or func_type == FT_STR):
+                                if direction == "children" and (not get_struc_name(next_func_ea) or func_type == FT_STR):
                                     if debug: dbg_print("append result:", "ea:", hex(next_ea).rstrip("L"), "func_ea:", hex(next_func_ea).rstrip("L"), "dref_off_ea:", hex(dref_off_ea).rstrip("L"), func_type)
                                     result.append((next_ea, next_func_ea, func_type))
                                 if debug: dbg_print("yield result:", "ea:", hex(next_ea).rstrip("L"), "func_ea:", hex(next_func_ea).rstrip("L"), func_type)
                                 yield result
-                                if direction == "children" and (not ida_struct.get_struc_name(next_func_ea) or func_type == FT_STR):
+                                if direction == "children" and (not get_struc_name(next_func_ea) or func_type == FT_STR):
                                     result.pop(-1)
                                 recurse_flag = False
                             else:

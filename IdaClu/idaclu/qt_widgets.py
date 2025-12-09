@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-from collections import OrderedDict
+from collections import defaultdict, OrderedDict
+from functools import partial
+from re import split
+
+import idaapi
 
 from idaclu.qt_shims import (
     QAbstractItemView,
@@ -9,7 +13,9 @@ from idaclu.qt_shims import (
     QEvent,
     QFont,
     QFrame,
+    QHeaderView,
     QHBoxLayout,
+    QIcon,
     QLabel,
     QLineEdit,
     QPainter,
@@ -19,9 +25,11 @@ from idaclu.qt_shims import (
     QPushButton,
     QSize,
     QSizePolicy,
+    QSortFilterProxyModel,
     QStandardItem,
     QStyledItemDelegate,
     Qt,
+    QtCore,
     QTreeView,
     QThread,
     QVBoxLayout,
@@ -30,6 +38,7 @@ from idaclu.qt_shims import (
 )
 
 from idaclu.qt_utils import i18n
+from idaclu import ida_shims
 from idaclu import plg_utils
 
 
@@ -130,7 +139,7 @@ class LabelTool(QWidget):
         return text
 
     def getLabelMode(self):
-        return self.data[self.label_mode]['caption']
+        return self.data[self.label_mode]['caption'].lower()
 
     def setModeHandler(self, handler):
         self._recur_toggle.clicked.connect(handler)
@@ -161,13 +170,14 @@ class LabelTool(QWidget):
 
 
 class ProgressIndicator(QWidget):
-    def __init__(self, name, parent=None):
+    def __init__(self, parent=None):
         super(ProgressIndicator, self).__init__(parent)
         layout = QVBoxLayout()
         layout.addWidget(self.initProgressBar(parent))
         layout.setContentsMargins(0, 0, 0, 0)
         self.setLayout(layout)
-        self.setProgress(0)
+        self._update_step = 2
+        self.reset()
         self._worker = Worker()
         self._worker.updateProgress.connect(self.setProgress)
 
@@ -180,27 +190,52 @@ class ProgressIndicator(QWidget):
         return progress
 
     def setProgress(self, progress):
-        if progress == 0:
-            self.setVisible(False)
-        elif progress == 100:
-            self.setVisible(False)
-            self._progress.setValue(0)
-        else:
-            self.setVisible(True)
-            self._progress.setValue(progress)
+        if progress % self._update_step == 0 and progress != self._progress.value():
+            if progress == self._update_step:
+                self.setVisible(True)
+                self._progress.setValue(progress)
+            elif progress == 100:
+                self.reset()
+            else:
+                self.setVisible(True)
+                self._progress.setValue(progress)
 
-    def updateProgress(self, progress):
-        self._worker.updateProgress.emit(progress)
+    def updateProgress(self, progress, msg=""):
+        if progress % self._update_step == 0 and progress != self._progress.value():
+            if progress == self._update_step:
+                idaapi.show_wait_box("Processing...")
+            elif progress == 100:
+                idaapi.hide_wait_box()
+            else:
+                msg0 = "Progress: {}%".format(progress)
+                idaapi.replace_wait_box(
+                    "{}\n{}".format(msg0.ljust(40), msg.ljust(40))
+                )
+            if ida_shims.user_cancelled():
+                idaapi.hide_wait_box()
+                self.reset()
+                raise plg_utils.UserCancelledError
+            idaapi.execute_ui_requests([lambda: None,])
+            self._worker.updateProgress.emit(progress)
 
+    def reset(self):
+        self._progress.reset()
+        self.setVisible(False)
 
-class ColorButton(QPushButton):
-    def __init__(self, name, size=(30, 30), parent=None):
+class ToolButton(QPushButton):
+    def __init__(self, name=None, size=(30, 30), parent=None):
         QPushButton.__init__(self, parent=parent)
-        self.setObjectName(name)
+        if name:
+            self.setObjectName(name)
         self.setMinimumSize(QSize(*size))
         self.setMaximumSize(QSize(*size))
-        self.setCheckable(True)
         self.setCursor(QCursor(Qt.PointingHandCursor))
+
+
+class ColorButton(ToolButton):
+    def __init__(self, name, size=(30, 30), parent=None):
+        ToolButton.__init__(self, name=name, parent=parent)
+        self.setCheckable(True)
 
 
 class Worker(QThread):
@@ -292,12 +327,12 @@ class FilterInputGroup(QWidget):
             self._names = names
             self._state = False
 
-        name = names[0]
+        self.name = names[0]
         layout = QHBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        layout.addWidget(self.initText(name, self))
-        layout.addWidget(self.initSelect(name))
+        layout.addWidget(self.initText(self.name, self))
+        layout.addWidget(self.initSelect(self.name))
         layout.setStretch(0, 0)
         layout.setStretch(1, 5)
         layout.setStretch(2, 7)
@@ -398,7 +433,10 @@ class FilterInputGroup(QWidget):
                     else:
                         self._items[lbl] = val
                 new_entry = '{} ({})'.format(lbl, self._items[lbl])
-                self._select.chgItem(idx, new_entry)
+                if self.name == 'COLORS' and plg_utils.RgbColor(lbl).is_color_defined():
+                    self._select.chgItem(idx, new_entry, plg_utils.RgbColor(lbl).get_to_tuple())
+                else:
+                    self._select.chgItem(idx, new_entry)
 
         if is_sorted:
             self.sortItems()
@@ -459,13 +497,13 @@ class CheckableComboBox(QComboBox):
         item.setData(Qt.Unchecked, Qt.CheckStateRole)
         self.model().appendRow(item)
 
-    def chgItem(self, row, text):
+    def chgItem(self, row, text, color=None):
         if row == -1:
-            self.addItem((text, None))
+            self.addItem((text, color if color else None))
         else:
             item = self.model().item(row)
             item.setData(text, role=Qt.DisplayRole)
-            
+
     def removeItem(self, row):
         self.model().removeRow(row)
 
@@ -627,29 +665,264 @@ class FrameLayout(QWidget):
             painter.end()
 
 
-class CluTreeView(QTreeView):
+class FilterHeader(QHeaderView):
+    filterChanged = Signal(int)
+
+    def __init__(self, parent):
+        super().__init__(Qt.Horizontal, parent)
+        self._editors = []
+        self._padding = 4
+        self.filters_visible = False  # Initialize filters_visible
+        self.setStretchLastSection(True)
+        self.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.setSortIndicatorShown(False)
+        self.sectionResized.connect(self.adjustPositions)
+        parent.header().sectionResized.connect(self.adjustPositions)
+        parent.horizontalScrollBar().valueChanged.connect(self.adjustPositions)
+
+    def setFilterBoxes(self, count):
+        while self._editors:
+            editor = self._editors.pop()
+            editor.deleteLater()
+        for index in range(count):
+            editor = QLineEdit(self.parent())
+            editor.setPlaceholderText('Filter')
+            editor.textChanged.connect(partial(self.filterChanged.emit, index))  # Emit filterChanged on each keystroke
+            editor.setVisible(self.filters_visible)  # Initial visibility state
+            self._editors.append(editor)
+        self.adjustPositions()
+
+    def toggleFilterVisibility(self):
+        """Toggle the visibility of the filter inputs."""
+        self.filters_visible = not self.filters_visible
+        for editor in self._editors:
+            editor.setVisible(self.filters_visible)
+        self.updateGeometries()
+        self.adjustPositions()
+
+    def sizeHint(self):
+        size = super().sizeHint()
+        if self._editors and self.filters_visible:
+            height = self._editors[0].sizeHint().height()
+            size.setHeight(size.height() + height + self._padding)
+        return size
+
+    def updateGeometries(self):
+        if self._editors and self.filters_visible:
+            height = self._editors[0].sizeHint().height()
+            self.setViewportMargins(0, 0, 0, height + self._padding)
+        else:
+            self.setViewportMargins(0, 0, 0, 0)
+        super().updateGeometries()
+        self.adjustPositions()
+
+    def adjustPositions(self):
+        if not self.filters_visible:
+            return
+        for index, editor in enumerate(self._editors):
+            height = editor.sizeHint().height()
+            editor.move(self.sectionPosition(index) - self.offset() + 2, height + (self._padding // 2))
+            editor.resize(self.sectionSize(index), height)
+
+    def filterText(self, index):
+        if 0 <= index < len(self._editors):
+            return self._editors[index].text()
+        return ''
+
+
+class FilterProxyModel(QSortFilterProxyModel):
     def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setDynamicSortFilter(True)
+        self.filter_texts = {}
+
+    def setFilterText(self, index, text):
+        self.filter_texts[index] = text.lower()
+        self.invalidateFilter()
+
+    def filterAcceptsRow(self, source_row, source_parent):
+        model = self.sourceModel()
+        index = model.index(source_row, 0, source_parent)
+        # Both parent-items and child-items are processed by this function.
+        return self.hasMatch(index)
+
+    def rowMatchesFilter(self, index):
+        filters = self.filter_texts.items()
+
+        # No filters defined, so preserve any row.
+        if len(filters) == 0:
+            return True
+
+        for col, filter_text in filters:
+            if filter_text:
+                cell_data = self.sourceModel().data(index.sibling(index.row(), col))
+                if filter_text not in cell_data.lower():
+                    return False
+
+        # Preserve row if no filter triggered reject in this row.
+        return True
+
+    def hasMatch(self, parent_index):
+        model = self.sourceModel()
+        row_count = model.rowCount(parent_index)
+
+        for row in range(row_count):
+            child_index = model.index(row, 0, parent_index)
+            if self.rowMatchesFilter(child_index):
+                return True
+
+        return self.rowMatchesFilter(parent_index)
+
+    def lessThan(self, left_index, right_index):
+        # Fetch data for comparison
+        left_data = left_index.data()
+        right_data = right_index.data()
+
+        # Apply natural sorting if both items are strings
+        if isinstance(left_data, str) and isinstance(right_data, str):
+            return self.natural_sort(left_data, right_data)
+
+        # Otherwise, fall back to default comparison
+        return left_data < right_data
+
+    def natural_sort_key(self, s):
+        return [int(text) if text.isdigit() else text.lower() for text in split('([0-9]+)', str(s))]
+
+    def natural_sort(self, left, right):
+        return self.natural_sort_key(left) > self.natural_sort_key(right)
+
+    def sort(self, column, order, is_child_sort=-1):
+        # Determine the source model for sorting
+        source_model = self.sourceModel()
+        # self.beginResetModel()
+        self.layoutAboutToBeChanged.emit()
+
+        if is_child_sort != -1:  # Sorting for the parent
+            if is_child_sort:  # Sorting for children
+                # Sort the children for each root item
+                self.sort_child_items(source_model, column, order)
+            else:
+                # Sort the root level
+                self.sort_root_items(source_model, column, order)
+
+        # self.endResetModel()
+        self.layoutChanged.emit()
+
+    def sort_root_items(self, model, column, order):
+        model.iroot._children.sort(key=lambda x: self.natural_sort_key(x.data(column)),
+                                    reverse=(order == Qt.DescendingOrder))
+
+    def sort_child_items(self, model, column, order):
+        for i, child in enumerate(model.iroot._children):
+            child._children.sort(key=lambda x: self.natural_sort_key(x.data(column)),
+                                reverse=(order == Qt.DescendingOrder))
+
+
+class CluTreeView(QTreeView):
+    def __init__(self, env_desc, parent=None):
         QTreeView.__init__(self, parent=parent)
         self.setSortingEnabled(True)
         self.setAlternatingRowColors(True)
         self.setObjectName(u"rvTable")
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.setAlternatingRowColors(True)
         self.setSelectionMode(QAbstractItemView.ExtendedSelection)
 
-        self.header().sectionClicked.connect(self.sortByColumn)
         self.expanded.connect(self.save_expanded_state)
         self.collapsed.connect(self.save_expanded_state)
+
+        self.env = env_desc
+        self.heads = ['Name', 'Address', 'Size', 'Chunks', 'Nodes', 'Edges', 'Comment', 'Color']
+        if self.env.feat_folders:
+            self.heads.insert(1, 'Folder')
         self.expanded_state = {}
+        self.rec_indx = defaultdict(list)
+
+        self._header = FilterHeader(self)
+        self._header.filterChanged.connect(self.applyFilter)  # Connect signal for instant filtering
+        self.setHeader(self._header)
+        # Consider the order
+        self.header().sectionClicked.connect(self.sortByColumn)
 
     def sortByColumn(self, logicalIndex):
         currentOrder = self.header().sortIndicatorOrder()
         isChildSort = bool(self.expanded_state) and any(value == True for value in self.expanded_state.values())
-        self.model().sort(logicalIndex, currentOrder, int(isChildSort))
-        for index, state in self.expanded_state.items():
-            self.setExpanded(index, state)
+        model = self.model()
+        model.sort(logicalIndex, currentOrder, int(isChildSort))
+        self.indexRecords()
+
+        root_idx = QtCore.QModelIndex()
+        clu_count = model.rowCount(root_idx)
+        for value, state in self.expanded_state.items():
+            for r_num in range(clu_count):
+                p_idx = model.index(r_num, 0, root_idx)
+                if value == p_idx.data():
+                    self.setExpanded(p_idx, state)
+                    break
+
+        self.model().invalidateFilter()
+        self.indexRecords()
+
+    def indexRecords(self):
+        self.rec_indx.clear()
+        model = self.model()
+        id_col = self.heads.index('Address')
+        root_idx = QtCore.QModelIndex()
+        for r_num in range(model.rowCount(root_idx)):
+            p_idx = model.index(r_num, 0, root_idx)
+            for c_num in range(model.rowCount(p_idx)):
+                index = model.index(c_num, id_col, p_idx)
+                self.rec_indx[int(index.data(), 16)].append((r_num, c_num))
 
     def save_expanded_state(self, index):
-        self.expanded_state[index] = self.isExpanded(index)
+        self.expanded_state[index.data()] = self.isExpanded(index)
 
+    def setModelProxy(self, model):
+        self.proxy_model = FilterProxyModel(self)
+        self.proxy_model.setSourceModel(model)
+        self.setModel(self.proxy_model)
+        self.collapseAll()
+        self._header.setFilterBoxes(self.model().columnCount())
+
+    def keyPressEvent(self, event):
+        # Toggle filter visibility on Ctrl+F
+        if event.key() == Qt.Key_F and event.modifiers() & Qt.ControlModifier:
+            self._header.toggleFilterVisibility()
+        else:
+            super().keyPressEvent(event)
+
+    def applyFilter(self, index):
+        filter_text = self._header.filterText(index)
+        self.proxy_model.setFilterText(index, filter_text)
+        self.indexRecords()
+
+
+class ConfigTool(QWidget):
+    def __init__(self, parent=None, env=None):
+        QWidget.__init__(self, parent=parent)
+        self.env = env
+        self.is_save = False
+        layout = self.genLayout()
+        self.setLayout(layout)
+        self.setMinimumSize(QSize(32, 30))
+        self.setMaximumSize(QSize(16777215, 30))
+        self._saveBtn.clicked.connect(self.toggleSave)
+        self.loadIcon()
+
+    def genLayout(self):
+        layout = QHBoxLayout()
+        self._saveBtn = ToolButton()
+        layout.addWidget(self._saveBtn)
+        layout.setContentsMargins(0, 0, 0, 0)
+        return layout
+
+    def loadIcon(self):
+        saveIcon = QIcon(u":/idaclu/save_{}_64.png".format(int(self.is_save)))
+        self._saveBtn.setIcon(saveIcon)
+
+    def toggleSave(self):
+        self.is_save = not self.is_save
+        self.loadIcon()
+        action = ["enable", "disable"][int(self.is_save)]
+        self._saveBtn.setToolTip("{} result caching".format(action.capitalize()))
+        return self.is_save

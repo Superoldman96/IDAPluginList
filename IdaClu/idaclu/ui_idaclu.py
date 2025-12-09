@@ -45,6 +45,7 @@ from idaclu.qt_utils import i18n
 
 from idaclu.qt_widgets import (
     CluTreeView,
+    ConfigTool,
     FilterInputGroup,
     LabelTool,
     PaletteTool,
@@ -186,24 +187,18 @@ class Ui_PluginDialog(object):
 
         self.ColorFilterLayout = QHBoxLayout()
         self.ColorFilterLayout.setObjectName(u"ColorFilterLayout")
-        self.sColorFilterBeg = QSpacerItem(40, 26, QSizePolicy.Fixed, QSizePolicy.Minimum)
+        self.sColorFilterBeg = QSpacerItem(20, 26, QSizePolicy.Fixed, QSizePolicy.Minimum)
 
         self.ColorFilterLayout.addItem(self.sColorFilterBeg)
 
-        self.wColorFilter = PaletteTool(
-            u"ColorFilter",
-            (26, 26),
-            u"Filter",
-            True,
-            False,
-            self.FiltersGroup)
+        self.wColorFilter = FilterInputGroup([i18n("COLORS"), i18n("Pick colors...")], i18n("Pick colors..."), self.env_desc, self.FiltersGroup)
         self.wColorFilter.setObjectName(u"wColorFilter")
         self.wColorFilter.setMinimumSize(QSize(0, 26))
         self.wColorFilter.setMaximumSize(QSize(16777215, 26))
 
         self.ColorFilterLayout.addWidget(self.wColorFilter)
 
-        self.sColorFilterEnd = QSpacerItem(40, 26, QSizePolicy.Fixed, QSizePolicy.Minimum)
+        self.sColorFilterEnd = QSpacerItem(20, 26, QSizePolicy.Fixed, QSizePolicy.Minimum)
 
         self.ColorFilterLayout.addItem(self.sColorFilterEnd)
 
@@ -243,13 +238,7 @@ class Ui_PluginDialog(object):
         self.hlResultsView = QHBoxLayout(self.wResultsView)
         self.hlResultsView.setObjectName(u"hlResultsView")
         self.hlResultsView.setContentsMargins(0, 0, 0, 0)
-        self.rvTable = CluTreeView(self.wResultsView)
-        self.rvTable.setObjectName(u"rvTable")
-        self.rvTable.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.rvTable.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.rvTable.setAlternatingRowColors(True)
-        self.rvTable.setSelectionMode(QAbstractItemView.ExtendedSelection)
-
+        self.rvTable = CluTreeView(self.env_desc, self.wResultsView)
         self.hlResultsView.addWidget(self.rvTable)
 
 
@@ -272,9 +261,16 @@ class Ui_PluginDialog(object):
 
         self.ToolsLayout.addWidget(self.wLabelTool)
 
-        self.sToolsMid = QSpacerItem(80, 20, QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.sp1 = QSpacerItem(30, 20, QSizePolicy.Fixed, QSizePolicy.Minimum)
+        self.ToolsLayout.addItem(self.sp1)
 
-        self.ToolsLayout.addItem(self.sToolsMid)
+        self.vl = QFrame()
+        self.vl.setFrameShape(QFrame.VLine)
+        self.vl.setFrameShadow(QFrame.Sunken)
+        self.ToolsLayout.addWidget(self.vl)
+
+        self.sp2 = QSpacerItem(20, 20, QSizePolicy.Fixed, QSizePolicy.Minimum)
+        self.ToolsLayout.addItem(self.sp2)
 
         self.wColorTool = PaletteTool(
             u"PaletteTool",
@@ -289,6 +285,11 @@ class Ui_PluginDialog(object):
 
         self.ToolsLayout.addWidget(self.wColorTool)
 
+        self.sToolsMid = QSpacerItem(80, 20, QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.ToolsLayout.addItem(self.sToolsMid)
+
+        self.ConfigTool = ConfigTool(env=self.env_desc)
+        self.ToolsLayout.addWidget(self.ConfigTool)
         self.sToolsEnd = QSpacerItem(10, 20, QSizePolicy.Fixed, QSizePolicy.Minimum)
 
         self.ToolsLayout.addItem(self.sToolsEnd)

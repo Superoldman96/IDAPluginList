@@ -346,18 +346,6 @@ public:
 };
 
 //---------------------------------------------------------------------------
-template<class T> void print_generic(T t)
-{
-  IDiaPropertyStorage *pPropertyStorage;
-  HRESULT hr = t->QueryInterface(__uuidof(IDiaPropertyStorage), (void **)&pPropertyStorage);
-  if ( hr == S_OK )
-  {
-    print_property_storage(pPropertyStorage);
-    pPropertyStorage->Release();
-  }
-}
-
-//---------------------------------------------------------------------------
 static const char *const g_pdb_errors[] =
 {
   "Operation successful (E_PDB_OK)",
@@ -423,7 +411,7 @@ static const GUID* const g_msdiav[] = { &__uuidof(DiaSource) };
 static const int         g_diaver[] = { 1400 };
 static const char* const g_diadlls[] = { "msdia140.dll" };
 #else
-class DECLSPEC_UUID("4C41678E-887B-4365-A09E-925D28DB33C2") DiaSource90;
+class DECLSPEC_UUID("4c41678e-887b-4365-a09e-925d28db33c2") DiaSource90;
 class DECLSPEC_UUID("1fbd5ec4-b8e4-4d94-9efe-7ccaf9132c98") DiaSource80;
 class DECLSPEC_UUID("31495af6-0897-4f1e-8dac-1447f10174a1") DiaSource71;
 static const GUID *const g_d90 = &__uuidof(DiaSource90);  // msdia90.dll
@@ -501,6 +489,9 @@ static DWORD get_machine_type(DWORD dwMachType)
       break;
     case PECPU_ARMV7:
       machine = CV_CFL_ARM7;
+      break;
+    case PECPU_ARM64:
+      machine = CV_CFL_ARM64;
       break;
     case PECPU_PPC:
       machine = CV_CFL_PPC620;
@@ -741,17 +732,7 @@ void try_download_pdb_from_sym_server_by_idm_when_not_exist(clsid_t& guid, uint3
 										{
 											srvs.push_back(srv);
 										}
-										else
-										{
-											ASSERT(srv);
-											break;
-										}
 									}
-								}
-								else
-								{
-									ASSERT(FALSE);
-									break;
 								}
 
 								// Get next token: 
@@ -762,16 +743,35 @@ void try_download_pdb_from_sym_server_by_idm_when_not_exist(clsid_t& guid, uint3
 							{
 								for (size_t i = 0; i < cache_paths.size(); i++)
 								{
-									LPCSTR srv = srvs[i].c_str();
+									qstring srv = srvs[i];
+									size_t pos = srv.find("//");
+									if (pos != qstring::npos)
+									{
+										pos = srv.find('/', pos + 2);
+									}
+									else
+									{
+										pos = srv.find('/');
+									}
+									qstring srv_path;
+									if (pos != qstring::npos)
+									{
+										srv_path = &srv[pos + 1];
+										if (srv_path.last() != '/')
+										{
+											srv_path.append('/');
+										}
+										srv.resize(pos);
+									}
 									HANDLE hsite, hfile;
-									BOOL bResult = httpOpenFileHandle(srv, path.c_str(), 0, &hsite, &hfile);
+									BOOL bResult = httpOpenFileHandle(srv.c_str(), (srv_path + path).c_str(), 0, &hsite, &hfile);
 									if (!bResult)
 									{
 										//尝试查找压缩格式的PDB文件(Mozilla服务器只提供了压缩格式，目前版本的IDA的PDB插件并不支持)
 										qstring path_Compressed;//CompressedFileName
 										path_Compressed = path.substr(0, path.length() - 1);
 										path_Compressed.append('_');
-										BOOL bResult_Compressed = httpOpenFileHandle(srv, path_Compressed.c_str(), 0, &hsite, &hfile);
+										BOOL bResult_Compressed = httpOpenFileHandle(srv.c_str(), (srv_path + path_Compressed).c_str(), 0, &hsite, &hfile);
 										if (bResult_Compressed)
 										{
 											//由于需要处理CAB,LZExpand,ZIP的解压，所以目前我们暂时不处理，UncompressFile
@@ -798,11 +798,11 @@ void try_download_pdb_from_sym_server_by_idm_when_not_exist(clsid_t& guid, uint3
 													{
 														ATLTRACE("FIND PDB IN SERVER: %s\n", srv);
 														qstring url(srv);
-														if (url[url.length() - 1] != '/')
+														if (url.last() != '/')
 														{
 															url.append('/');
 														}
-														url.append(path);
+														url.append(srv_path + path);
 
 														char szRelPath[MAX_PATH];
 														szRelPath[0] = 0;
@@ -1180,12 +1180,12 @@ HRESULT pdb_session_t::check_and_load_pdb(
 									  uint64 nFileSize = qfilesize_utf8(strPdbPath_Full.c_str());
 									  qstring strFileContext = GetFileContext(strPdbPath_Full.c_str(), nFileSize);
 									  MD5_FromData((uchar*)strFileContext.c_str(), nFileSize, md5Pdb_Old_for_Vs2015);
-									  strArgs.sprnt("/STATUS %s", strPdbPath_Full.c_str());
+									  strArgs.sprnt("/STATUS \"%s\"", strPdbPath_Full.c_str());
 								  }
 							  }
 							  else
 							  {
-								  strArgs.sprnt("/STATUS /OUT:%s %s", strPdbPath_Full.c_str(), strPdbPath.c_str());
+								  strArgs.sprnt("/STATUS /OUT:\"%s\" \"%s\"", strPdbPath_Full.c_str(), strPdbPath.c_str());
 							  }
 							  if (!strArgs.empty())
 							  {
@@ -1437,27 +1437,25 @@ HRESULT pdb_session_t::open_session(pdbargs_t &pdbargs)
     goto fail;
 
   // First try to open PDB file if it was specified.
-  const qstring &pdb_path = pdbargs.pdb_path;
-  if ( !pdb_path.empty()
-    && check_for_odd_paths(pdb_path.c_str())
-    && qfileexist(pdb_path.c_str()) )
+  if ( !pdbargs.pdb_path.empty()
+    && check_for_odd_paths(pdbargs.pdb_path.c_str())
+    && qfileexist(pdbargs.pdb_path.c_str()) )
   {
     qwstring wpdb_path;
-    utf8_utf16(&wpdb_path, pdb_path.c_str());
+    utf8_utf16(&wpdb_path, pdbargs.pdb_path.c_str());
     bool force_load = (pdbargs.flags & (PDBFLG_LOAD_TYPES|PDBFLG_EFD)) != 0
                    && (pdbargs.flags & PDBFLG_LOAD_NAMES) == 0;
     hr = check_and_load_pdb(wpdb_path.c_str(), pdbargs.pdb_sign, force_load, pdbargs);
     if ( hr == E_PDB_INVALID_SIG || hr == E_PDB_INVALID_AGE ) // Mismatching PDB
       goto fail;
     pdb_loaded = (hr == S_OK);
-    used_fname = pdb_path; // TODO is this needed?
+    used_fname = pdbargs.pdb_path; // TODO is this needed?
   }
 
   // Failed? Try to load input_path as EXE if it was specified.
-  const qstring &input_path = pdbargs.input_path;
-  if ( !pdb_loaded && !input_path.empty() )
+  if ( !pdb_loaded && !pdbargs.input_path.empty() )
   {
-    qstring path = input_path;
+    qstring path = pdbargs.input_path;
     if ( !qfileexist(path.c_str()) )
     {
       // If the input path came from a remote system, it is unlikely to be
@@ -1468,7 +1466,7 @@ HRESULT pdb_session_t::open_session(pdbargs_t &pdbargs)
       // Since we cannot rely on remote paths, we simply use the current dir
       char buf[QMAXPATH];
       qgetcwd(buf, sizeof(buf));
-      path.sprnt("%s\\%s", buf, qbasename(input_path.c_str()));
+      path.sprnt("%s\\%s", buf, qbasename(pdbargs.input_path.c_str()));
       msg("PDB: \"%s\": not found, trying \"%s\"\n", path.c_str(), buf);
     }
     if ( !check_for_odd_paths(path.c_str()) )
@@ -1507,22 +1505,21 @@ HRESULT pdb_session_t::open_session(pdbargs_t &pdbargs)
 
   // Set load address
   // TODO check if load_address should be set when loading PDB works directly.
-  ea_t load_address = pdbargs.loaded_base;
-  if ( load_address != BADADDR )
+  if ( pdbargs.loaded_base != BADADDR )
   {
-    msg("PDB: using load address %a\n", load_address);
-    pSession->put_loadAddress(load_address);  //-V595 'pSession' was utilized before it was verified against nullptr
+    msg("PDB: using load address %a\n", pdbargs.loaded_base);
+    pSession->put_loadAddress(pdbargs.loaded_base);
   }
 
   // Retrieve a reference to the global scope
-  hr = pSession->get_globalScope(&pGlobal); //-V595 'pSession' was utilized before it was verified against nullptr
+  hr = pSession->get_globalScope(&pGlobal);
   if ( hr != S_OK )
     goto fail;
 
   pdb_access = new local_pdb_access_t(pdbargs, pSource, pSession, pGlobal);
 
   DWORD pdb_machType, machType;
-  if ( pGlobal->get_machineType(&pdb_machType) != S_OK ) //-V595 The 'pGlobal' pointer was utilized before it was verified against nullptr
+  if ( pGlobal->get_machineType(&pdb_machType) != S_OK )
     pdb_machType = IMAGE_FILE_MACHINE_I386;
   machType = get_machine_type(pdb_machType);
 

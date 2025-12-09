@@ -18,8 +18,9 @@ void dump_pdb_udt(const pdb_udt_type_data_t &udt, const char *udt_name)
 {
   static size_t udt_counter = 0;
   ++udt_counter;
-  msg("PDEB: %" FMT_Z " struct '%s' total_size %" FMT_Z " taudt_bits 0x%X is_union %s\n",
+  msg("PDEB: %" FMT_Z " %s '%s' total_size %" FMT_Z " taudt_bits 0x%X is_union %s\n",
       udt_counter,
+      udt.is_union ? "union" : "struct",
       udt_name != nullptr ? udt_name : "",
       udt.total_size,
       udt.taudt_bits,
@@ -154,6 +155,38 @@ bool til_builder_t::get_symbol_type(tpinfo_t *out, pdb_sym_t &sym, uint32 *p_ord
 }
 
 //----------------------------------------------------------------------------
+bool til_builder_t::fix_ctor_to_return_ptr(func_type_data_t *fti, pdb_sym_t *parent)
+{
+  if ( inf_get_app_bitness() != 32 || parent == nullptr )
+    return false;
+
+  // detect constructor
+  if ( fti->empty() || !fti->rettype.is_void() )
+    return false;
+  const auto &arg0 = fti->at(0);
+  if ( !arg0.type.is_ptr() )
+    return false;
+  tinfo_t class_type = arg0.type.get_pointed_object();
+  qstring class_name;
+  if ( !class_type.get_type_name(&class_name) )
+    return false;
+
+  qstring funcname;
+  parent->get_name(&funcname);
+  qstring ctor_name;
+  ctor_name.sprnt("%s::%s", class_name.c_str(), class_name.c_str());
+  if ( ctor_name != funcname )
+    return false;
+
+  ddeb(("PDEB: detected constructor %s\n", funcname.c_str()));
+
+  // do not set FTI_CTOR, normally IDA ignores ctor/dtor return type
+  fti->flags &= ~FTI_CTOR;
+  fti->rettype = arg0.type;
+  return true;
+}
+
+//----------------------------------------------------------------------------
 size_t til_builder_t::get_symbol_type_length(pdb_sym_t &sym) const
 {
   DWORD64 size = 0;
@@ -186,7 +219,7 @@ cvt_code_t til_builder_t::convert_basetype(
   {
     case btNoType:
       out->is_notype = true;
-      // Fallthrough.
+      [[fallthrough]];
     default:
     case 0x12c304:                      // "impdir_entry" (guessed)
     case btBCD:
@@ -286,10 +319,11 @@ MAKE_INT:
 }
 
 //----------------------------------------------------------------------
-bool til_builder_t::retrieve_arguments(
+callcnv_t til_builder_t::retrieve_arguments(
         pdb_sym_t &_sym,
         func_type_data_t &fi,
-        pdb_sym_t *funcSym)
+        pdb_sym_t *funcSym,
+        callcnv_t cc)
 {
   struct type_name_collector_t : public pdb_access_t::children_visitor_t
   {
@@ -342,15 +376,14 @@ bool til_builder_t::retrieve_arguments(
         {
           if ( is_intel386(pdb_access->get_machine_type()) )
           {
-            if ( (fi.cc == CM_CC_FASTCALL
-               || fi.cc == CM_CC_SWIFT) // FIXME
+            if ( (cc == CM_CC_FASTCALL || cc == CM_CC_SWIFT) // FIXME
               && cur_argloc.regoff() == 0
               && (cur_argloc.reg1() == R_cx && i == 0
                || cur_argloc.reg1() == R_dx && i == 1) )
             {
               // ignore ecx and edx for fastcall
             }
-            else if ( fi.cc == CM_CC_THISCALL
+            else if ( cc == CM_CC_THISCALL
                    && cur_argloc.regoff() == 0
                    && cur_argloc.reg1() == R_cx && i == 0 )
             {
@@ -370,15 +403,14 @@ bool til_builder_t::retrieve_arguments(
       // we have some register params; need to convert function to custom cc
       CASSERT(is_purging_cc(CM_CC_THISCALL));
       CASSERT(is_purging_cc(CM_CC_FASTCALL));
-      fi.cc = is_purging_cc(fi.cc) ? CM_CC_SPECIALP : CM_CC_SPECIAL;
+      cc = is_purging_cc(cc) ? CM_CC_SPECIALP : CM_CC_SPECIAL;
     }
-    return true;
   }
-  return false;
+  return cc;
 }
 
 //----------------------------------------------------------------------
-cm_t til_builder_t::convert_cc(DWORD cc0) const
+callcnv_t til_builder_t::convert_cc(DWORD cc0) const
 {
   switch ( cc0 )
   {
@@ -502,7 +534,7 @@ bool til_builder_t::is_frame_reg(int reg) const
 {
   if (pdb_access->get_dia_version() >= 1400 && is_intel386(pdb_access->get_machine_type()))
   {
-    return reg == CV_ALLREG_VFRAME;
+    return reg == CV_ALLREG_VFRAME || reg == CV_REG_EBP;
   }
   return reg == get_frame_reg(pdb_access->get_machine_type());
 }
@@ -1431,6 +1463,7 @@ static void fill_vft_empty_splots(udt_type_data_t *udt)
 //----------------------------------------------------------------------
 void til_builder_t::create_vftables()
 {
+  int counter = 0;
   while ( !vftmap.empty() )
   {
     bool changed = false;
@@ -1484,8 +1517,12 @@ void til_builder_t::create_vftables()
       {
         ++p;
       }
+
+      ++counter;
+      if ( (counter % 1000 == 0) && user_cancelled() )
+        break;
     }
-    if ( !changed )
+    if ( !changed || user_cancelled() )
       break;
   }
 
@@ -1551,6 +1588,7 @@ cvt_code_t til_builder_t::fix_bit_union(pdb_udt_type_data_t *udt) const
     if ( !um.is_bitfield() )
       return cvt_ok;
   }
+  dump_pdb_udt(*udt, "|fix_bit_union|");
   // starting gap?
   if ( udt->begin()->offset == 0 )
     return cvt_ok;
@@ -1774,7 +1812,7 @@ cvt_code_t til_builder_t::really_convert_type(
         DWORD tag)
 {
   // retrieve type modifiers
-  type_t mods = get_sym_modifiers(sym);
+  type_t mods = parent ? 0 : get_sym_modifiers(sym);
 
   DWORD64 size = 0;
   sym.get_length(&size);
@@ -1863,13 +1901,13 @@ FAILED_ARRAY:
           break;
         }
         DWORD cc0;
-        fi.cc = CM_CC_UNKNOWN;
+        callcnv_t cc = CM_CC_UNKNOWN;
         if ( sym.get_callingConvention(&cc0) == S_OK )
-          fi.cc = convert_cc(cc0);
+          cc = convert_cc(cc0);
 
-        if ( get_cc(fi.cc) != CM_CC_VOIDARG )
+        if ( cc != CM_CC_VOIDARG )
         {
-          retrieve_arguments(sym, fi, parent);
+          cc = retrieve_arguments(sym, fi, parent, cc);
           // if arg has unknown/invalid argument => convert to ellipsis
           for ( func_type_data_t::iterator i = fi.begin(); i != fi.end(); i++ )
           {
@@ -1881,9 +1919,8 @@ FAILED_ARRAY:
               // (as opposed to 'foo(void)'), and which might not have a cdecl
               // calling convention. E.g., pc_win32_appcall.pe's 'FARPROC':
               // "int (FAR WINAPI * FARPROC) ()", which is a stdcall.
-              cm_t cc = get_cc(fi.cc);
               if ( cc == CM_CC_CDECL || inf_is_64bit() && cc == CM_CC_FASTCALL )
-                fi.cc = CM_CC_ELLIPSIS;
+                cc = CM_CC_ELLIPSIS;
               // remove the ellipsis and any trailing arguments
               fi.erase(i, fi.end());
               break;
@@ -1931,8 +1968,10 @@ FAILED_ARRAY:
             }
             if ( add_this )
               fi.insert(fi.begin(), thisarg);
+            if ( cc == CM_CC_THISCALL )
+              fix_ctor_to_return_ptr(&fi, parent);
           }
-          if ( is_user_cc(fi.cc) )
+          if ( is_user_cc(cc) )
           {
             // specify argloc for the return value
             size_t retsize = fi.rettype.get_size();
@@ -1960,8 +1999,9 @@ FAILED_ARRAY:
               if ( fi[i].argloc.is_badloc() )
                 fi.erase(fi.begin() + i);
           }
-          out->type.create_func(fi);
         }
+        fi.set_cc(cc);
+        out->type.create_func(fi);
       }
       break;
 
@@ -1975,50 +2015,55 @@ FAILED_ARRAY:
         {
           const til_builder_t *tb;
           enum_type_data_t ei;
-          const type_t *idatype;
           HRESULT visit_child(pdb_sym_t &child) override
           {
             edm_t &em = ei.push_back();
             child.get_name(&em.name);
             em.value = tb->get_variant_long_value(child);
-            if ( em.name.empty()
-              || get_named_type(tb->ti, em.name.c_str(), NTF_SYMM, &idatype) == 1 )
+            if ( em.name.empty() )
             {
               return E_FAIL;
             }
             return S_OK;
           }
           name_value_collector_t(const til_builder_t *_tb)
-            : tb(_tb), idatype(nullptr) {}
+            : tb(_tb) {}
         };
         name_value_collector_t nvc(this);
         if ( size != 0 && size <= 64 )
           nvc.ei.set_nbytes(size);
         HRESULT hr = pdb_access->iterate_children(sym, SymTagNull, nvc);
         if ( FAILED(hr) )
-        { // symbol already exists or
-          // corrupted name or
+        { // corrupted name or
           // iterate_children failed to read any child
           if ( nvc.ei.empty() || nvc.ei.back().name.empty() )
           {
             code = cvt_failed;
             break;
           }
-          // just reuse the existing enum
-          if ( !out->type.deserialize(ti, &nvc.idatype) ) // this is not quite correct
-            INTERR(30407);
-          qstring n1;
-          if ( out->type.get_type_name(&n1) )
-          {
-            qstring nm;
-            get_symbol_name(sym, nm);
-            if ( nm == n1 )
-              code = cvt_typedef;       // avoid circular dependencies
-          }
         }
         else
         {
-          out->type.create_enum(nvc.ei);
+          // Check if the type exists already. If so, create a typedef.
+          qstring nm;
+          const type_t *idatype = nullptr;
+          get_symbol_name(sym, nm);
+          if ( get_named_type(ti, nm.c_str(), NTF_TYPE, &idatype) == 1 )
+          {
+            // just reuse the existing enum
+            if ( !out->type.deserialize(ti, &idatype) ) // this is not quite correct
+              INTERR(30407);
+            qstring n1;
+            if ( out->type.get_type_name(&n1) )
+            {
+              if ( nm == n1 )
+                code = cvt_typedef;       // avoid circular dependencies
+            }
+          }
+          else
+          {
+            out->type.create_enum(nvc.ei);
+          }
         }
       }
       break;
@@ -2073,6 +2118,23 @@ cvt_code_t til_builder_t::convert_type(
 }
 
 //----------------------------------------------------------------------
+uint32 til_builder_t::allocate_and_assign_ordinal(const char *name) const
+{
+  // type may be copied already from base til
+  uint32 ord = get_type_ordinal(ti, name);
+  if ( ord == 0 )
+  {
+    ord = alloc_type_ordinal(ti);
+    // create a forward declaration.
+    // we need it because named type my be appeared during copy_named_type()
+    tinfo_t tif;
+    tif.create_typedef(ti, "", BTF_STRUCT, false);
+    tif.set_numbered_type(ti, ord, NTF_TYPE, name);
+  }
+  return ord;
+}
+
+//----------------------------------------------------------------------
 bool til_builder_t::begin_creation(DWORD tag, const qstring &name, uint32 *p_ord)
 {
   if ( tag != SymTagFunction )
@@ -2084,7 +2146,7 @@ bool til_builder_t::begin_creation(DWORD tag, const qstring &name, uint32 *p_ord
       if ( c->second == 0 ) // allocated?
       {
         if ( ord == 0 )
-          ord = alloc_type_ordinal(ti); // have to create the type ord immediately
+          ord = allocate_and_assign_ordinal(name.c_str());
         c->second = ord;
         QASSERT(490, ord != 0);
         ddeb(("PDEB: '%s' prematurely mapped to %u\n", name.c_str(), ord));
@@ -2109,7 +2171,7 @@ uint32 til_builder_t::end_creation(const qstring &name)
   }
   if ( ord == 0 )
   {
-    ord = alloc_type_ordinal(ti); // have to create the type ord immediately
+    ord = allocate_and_assign_ordinal(name.c_str());
     QASSERT(491, ord != 0);
     ddeb(("PDEB: '%s' prematurely mapped to %u\n", name.c_str(), ord));
   }
@@ -2166,6 +2228,51 @@ cvt_code_t til_builder_t::handle_overlapping_members(pdb_udt_type_data_t *udt) c
           --fidx;
           --first;
           off = first->offset;
+        }
+        // calculate collected bitfield size so far
+        uint64 bf_collected_size = 0;
+        for ( pdb_udt_type_data_t::iterator q=first; q != p; ++q )
+        {
+          if ( q->is_bitfield() )
+            bf_collected_size += q->bit_offset + q->size;
+        }
+        // Fields are sorted by offsets. If union fields are structures,
+        // it may lead to puzzling situations like this:
+        //  4. offset 0x80 size 0x8  'Variant' type      'unsigned __int8' effalign 0 tafld_bits 0x0 fda 0 bit_offset 0
+        //  5. offset 0x80 size 0x8  'Padding' type      'unsigned __int32 : 8' effalign 0 tafld_bits 0x0 fda 0 bit_offset 0
+        //  6. offset 0x88 size 0x18 'Reserved' type     'unsigned __int8[3]' effalign 0 tafld_bits 0x0 fda 0 bit_offset 0
+        //  7. offset 0x88 size 0x1  'ChangeTimeUpgrade' type 'unsigned __int32 : 1' effalign 0 tafld_bits 0x0 fda 0 bit_offset 8
+        //  8. offset 0x89 size 0x17 'ReservedFlags'     type 'unsigned __int32 : 23' effalign 0 tafld_bits 0x0 fda 0 bit_offset 9
+        // Here the "Padding' and 'Reserved' fields belong to different sub-structures:
+        //   struct $2BE9FDB777E807E44C324ABC6EC300EB
+        //   {
+        //       unsigned __int8 Variant;
+        //       unsigned __int8 Reserved[3];
+        //   };
+        //
+        //   struct $A201E2401D2F1CB09DF5150550A30288
+        //   {
+        //       unsigned __int32 Padding : 8;
+        //       unsigned __int32 ChangeTimeUpgrade : 1;
+        //       unsigned __int32 ReservedFlags : 23;
+        //   };
+        //
+        //   union $6092742E3C4906EBD927CAE4613FA161
+        //   {
+        //       $2BE9FDB777E807E44C324ABC6EC300EB __s0;
+        //       $A201E2401D2F1CB09DF5150550A30288 __s1;
+        //   };
+        if ( p != end
+          && !p->is_bitfield()
+          && bf_collected_size != 0
+          && bf_collected_size < bf_typesize*8
+          && (p+1) != end
+          && p->offset == (p+1)->offset
+          && (p+1)->is_bitfield()
+          && bf_collected_size <= (p+1)->bit_offset
+          && (p+1)->type.get_size() == bf_typesize )
+        {
+          ++p;
         }
         while ( p != end
              && p->is_bitfield()
@@ -2363,7 +2470,6 @@ bool til_builder_t::retrieve_type(
 
   // some types can be defined multiple times. check if the name is already defined
   bool defined_correctly = false;
-  bool defined_wrongly = false;
   type_t tif_mod = 0;
   if ( !ord_set )
     ord = get_type_ordinal(ti, ns.c_str());
@@ -2372,9 +2478,7 @@ bool til_builder_t::retrieve_type(
     tinfo_t tif;
     tif.create_typedef(ti, ord);
     tif_mod = get_sym_modifiers(sym);
-    if ( tif.get_realtype() == BT_UNK )
-      defined_wrongly = true;
-    else
+    if ( tif.get_realtype() != BT_UNK || !tif.is_forward_decl() )
       defined_correctly = true;
   }
   if ( !defined_correctly )
@@ -2436,9 +2540,7 @@ bool til_builder_t::retrieve_type(
       if ( !reuse_anon_type )
       {
         ord = end_creation(ns);
-        int ntf_flags = NTF_NOBASE|NTF_FIXNAME;
-        if ( defined_wrongly )
-          ntf_flags |= NTF_REPLACE;
+        int ntf_flags = NTF_NOBASE|NTF_FIXNAME|NTF_REPLACE;
         tinfo_t tif;
         tinfo_code_t code = tif.deserialize(ti, &type, &fields)
                           ? tif.set_numbered_type(ti, ord, ntf_flags, ns.empty() ? nullptr : ns.c_str())
@@ -2523,9 +2625,21 @@ HRESULT til_builder_t::handle_symbol(pdb_sym_t &sym)
       }
       return S_OK;
     // new tags for msdia140
+    case SymTagCallSite:
+    case SymTagInlineSite:
+    case SymTagBaseInterface:
+    case SymTagVectorType:
+    case SymTagMatrixType:
+    case SymTagHLSLType:
+    case SymTagCaller:
+    case SymTagCallee:
+    case SymTagExport:
+    case SymTagHeapAllocationSite:
     case SymTagCoffGroup:
+    case SymTagInlinee:
       return S_OK;
     default:
+      ASSERT(tag < SymTagCallSite);
       break;
   }
 
@@ -2541,7 +2655,6 @@ HRESULT til_builder_t::handle_symbol(pdb_sym_t &sym)
   return S_OK;
 }
 
-
 //----------------------------------------------------------------------
 // Each time we encounter a toplevel type/func/whatever, we want to make
 // sure the UI has had a chance to refresh itself.
@@ -2549,7 +2662,8 @@ struct toplevel_children_visitor_t : public pdb_access_t::children_visitor_t
 {
   virtual HRESULT visit_child(pdb_sym_t &sym) override
   {
-    user_cancelled();
+    if ( user_cancelled() )
+      return E_ABORT;
     return do_visit_child(sym);
   }
 
@@ -2644,20 +2758,23 @@ HRESULT til_builder_t::build(pdb_sym_t &global_sym)
   HRESULT hr = before_iterating(global_sym);
   if ( hr == S_OK && (pdb_access->pdbargs.flags & PDBFLG_LOAD_TYPES) != 0 )
   {
-      if ((pdb_access->pdbargs.flags & PDBFLG_IS_MINIPDB) == 0)
-      {
-          hr = handle_types(global_sym);
-      }
+    show_wait_box("Handling types ...");
+    if ((pdb_access->pdbargs.flags & PDBFLG_IS_MINIPDB) == 0)
+    {
+      hr = handle_types(global_sym);
+    }
+    hide_wait_box();
   }
   if ( (pdb_access->pdbargs.flags & PDBFLG_LOAD_NAMES) != 0 )
   {
-      if ((pdb_access->pdbargs.flags & PDBFLG_IS_MINIPDB) == 0)
-      {
-          if (hr == S_OK)
-              hr = handle_symbols(global_sym);
-          if (hr == S_OK)
-              hr = handle_globals(global_sym);
-      }
+    show_wait_box("Handling symbols ...");
+    if ((pdb_access->pdbargs.flags & PDBFLG_IS_MINIPDB) == 0)
+    {
+      if ( hr == S_OK )
+        hr = handle_symbols(global_sym);
+      if ( hr == S_OK )
+        hr = handle_globals(global_sym);
+    }
     // handle_globals() will set the type and undecorated name for globals,
     // and handle_publics() will set the decorated name for public symbols.
     // We want both the type (from handle_globals()) and the decorated symbol
@@ -2669,10 +2786,16 @@ HRESULT til_builder_t::build(pdb_sym_t &global_sym)
     // Therefore, handle_publics() must be called *after* handle_globals().
     if ( hr == S_OK )
       hr = handle_publics(global_sym);
+    hide_wait_box();
   }
   if ( hr == S_OK )
   {
+    show_wait_box("Creating virtual function tables ...");
     create_vftables();
+    hide_wait_box();
+    if ( user_cancelled() )
+      return E_ABORT;
+
     hr = after_iterating(global_sym);
   }
   return hr;

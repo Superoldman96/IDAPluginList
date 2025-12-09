@@ -306,7 +306,7 @@ struct dummy_item_t : public source_item_t
     ea_t ea = get_ea();
     if ( ea == BADADDR )
       return false;
-    asize_t size = get_size();    //-V779 Unreachable code detected
+    asize_t size = get_size();
     set->add(range_t(ea, ea+size));
     return true;
   }
@@ -783,7 +783,7 @@ static src_item_kind_t find_srcitem_kind(pdb_sym_t *sym)
             case LocIsRegRel:
               DWORD dwReg;
               if ( sym->get_registerId(&dwReg) == S_OK
-                && (dwReg == CV_REG_EBP || dwReg == CV_AMD64_RSP) )
+                && (dwReg == CV_REG_EBP || dwReg == CV_AMD64_RSP || dwReg == CV_ARM64_SP) )
               {
                 kind = SRCIT_LOCVAR;
               }
@@ -1220,11 +1220,28 @@ bool idaapi pdb_provider_t::apply_module_info(const char *path)
     return false;
   pdbargs_t pdbargs;
   pdbargs.flags = PDBFLG_DBG_MODULE;
-  pdbargs.flags |= PDBFLG_LOAD_TYPES;
-  if ( !(inf_get_filetype() != f_PE && !is_miniidb()) )
+  if ( (inf_get_filetype() == f_PE || is_miniidb()) )
     pdbargs.flags |= PDBFLG_LOAD_NAMES;
+  else
+    pdbargs.flags |= PDBFLG_LOAD_TYPES;
   pdbargs.loaded_base = module->base;
   pdbargs.input_path = module->path.c_str();
+
+  static const char form[] =
+    "Load PDB file\n"
+    "\n"
+    "%A\n"
+    "<#Load types#Load ~t~ypes:C" QSTRINGIZE(LOAD_TYPES_FIELD) ">\n"
+    "<#Load names#Load ~n~ames:C" QSTRINGIZE(LOAD_NAMES_FIELD) ">>\n";
+  sval_t load_options = 0;
+  setflag(load_options, LOAD_TYPES, (pdbargs.flags & PDBFLG_LOAD_TYPES) != 0);
+  setflag(load_options, LOAD_NAMES, (pdbargs.flags & PDBFLG_LOAD_NAMES) != 0);
+  const char *input_path = pdbargs.input_path.c_str();
+  if ( !ask_form(form, input_path, &load_options) )
+    return false;
+  setflag(pdbargs.flags, PDBFLG_LOAD_TYPES, (load_options & LOAD_TYPES) != 0);
+  setflag(pdbargs.flags, PDBFLG_LOAD_NAMES, (load_options & LOAD_NAMES) != 0);
+
   show_wait_box("HIDECANCEL\nRetrieving symbol information from '%s'",
                 qbasename(module->path.c_str()));
   // pdb_path: cleared

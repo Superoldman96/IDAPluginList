@@ -1,42 +1,90 @@
 # Gepetto
 
 Gepetto is a Python plugin which uses various large language models to provide meaning to functions 
-decompiled by IDA Pro (≥ 7.4). It can leverage them to explain what a function does, and to automatically 
+decompiled by IDA Pro (≥ 7.6). It can leverage them to explain what a function does, and to automatically 
 rename its variables. Here is a simple example of what results it can provide in mere seconds:
 
 ![](https://github.com/JusticeRage/Gepetto/blob/main/readme/comparison.png?raw=true)
 
 ## Setup
 
-Simply drop this script (`gepetto.py`, as well as the `gepetto/` folder) into your IDA plugins folder (`$IDAUSR/plugins`). 
-By default, on Windows, this should be `%AppData%\Hex-Rays\IDA Pro\plugins` (you may need to create it).
-
-You will need to add the required packages to IDA's Python installation for the script to work.
-Find which interpreter IDA is using by checking the following registry key: 
-`Computer\HKEY_CURRENT_USER\Software\Hex-Rays\IDA` (default on Windows: `%LOCALAPPDATA%\Programs\Python\Python39`).
-Finally, with the corresponding interpreter, simply run: 
-
+### Using hcli (Recommended)
+The easiest way to install Gepetto is using the [Hex-Rays CLI tool (hcli)](https://github.com/HexRaysSA/ida-hcli):
+```bash
+pip install ida-hcli
+hcli plugin install gepetto
 ```
-[/path/to/python] -m pip install -r requirements.txt
-```
+
+This will automatically install the plugin to your IDA user directory.
+
+### Manual Installation
+Alternatively, you can manually install the plugin:
+1. Drop this script (`gepetto.py`, as well as the `gepetto/` folder) into your IDA plugins folder (`$IDAUSR/plugins`).
+2. The plugins directory location depends on your system:
+   - **Windows**: `%APPDATA%\Hex-Rays\IDA Pro\plugins\`
+   - **macOS**: `~/Library/Application Support/IDA Pro/plugins/`
+   - **Linux**: `~/.idapro/plugins/`
+3. Install the required packages to IDA's Python installation. Find which interpreter IDA is using by checking the following registry key:
+   `Computer\HKEY_CURRENT_USER\Software\Hex-Rays\IDA` (default on Windows: `%LOCALAPPDATA%\Programs\Python\Python39`).
+4. With the corresponding interpreter, simply run:
+   ```bash
+   [/path/to/python] -m pip install -r requirements.txt
+   ```
 
 ⚠️ You will also need to edit the configuration file (found as `gepetto/config.ini`) and add your own API keys. For 
-OpenAI, it can be found on [this page](https://beta.openai.com/account/api-keys).
+OpenAI, it can be found on [this page](https://platform.openai.com/api-keys).
 Please note that API queries are usually not free (although not very expensive) and you will need to set up a payment 
 method with the corresponding provider.
 
 ## Supported models
 
 - [OpenAI](https://playground.openai.com/)
-  - gpt-3.5-turbo-0125
+  - gpt-5
+  - gpt-5-mini
+  - gpt-5-nano
   - gpt-4-turbo
-  - gpt-4o (recommended for beginners)
-- [Groq](https://console.groq.com/playground)
-  -  llama3-70b-8192
-- [Together](https://api.together.ai/)
-  - mistralai/Mixtral-8x22B-Instruct-v0.1 (does not support renaming variables)
+  - gpt-4o
+  - o4-mini
+  - gpt-4.1
+  - o3
+  - o3-pro
+- [Google Gemini](https://ai.google.dev/)
+  - gemini-2.0-flash
+  - gemini-2.5-pro
+  - gemini-2.5-flash
+  - gemini-2.5-flash-lite-preview-06-17
+- [Azure OpenAI](https://ai.azure.com/)
+  - gpt-35-turbo
+  - gpt-35-turbo-1106
+  - gpt-35-turbo-16k
+  - gpt-4-turbo
+  - gpt-4-turbo-2024-0409-gs
 - [Ollama](https://ollama.com/)
   - Any local model exposed through Ollama (will not appear if Ollama is not running)
+- [Groq](https://console.groq.com/playground)
+  - llama-3.1-70b-versatile
+  - llama-3.2-90b-text-preview
+  - mixtral-8x7b-32768
+- [Together](https://api.together.ai/)
+  - mistralai/Mixtral-8x22B-Instruct-v0.1 (does not support renaming variables)
+- [Novita AI](https://novita.ai/)
+  - deepseek/deepseek-r1
+  - deepseek/deepseek-v3
+  - meta-llama/llama-3.3-70b-instruct
+  - meta-llama/llama-3.1-70b-instruct
+  - meta-llama/llama-3.1-405b-instruct
+- [Kluster.ai](https://kluster.ai/)
+  - deepseek-ai/DeepSeek-R1
+  - deepseek-ai/DeepSeek-V3-0324
+  - google/gemma-3-27b-it
+  - klusterai/Meta-Llama-3.1-8B-Instruct-Turbo
+  - klusterai/Meta-Llama-3.1-405B-Instruct-Turbo
+  - klusterai/Meta-Llama-3.3-70B-Instruct-Turbo
+  - meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8
+  - meta-llama/Llama-4-Scout-17B-16E-Instruct
+  - Qwen/Qwen2.5-VL-7B-Instruct
+- [LM Studio](https://lmstudio.ai/)
+  - Any local model exposed through LM Studio (will not appear if LM Studio Developer server is not running)
 
 Adding support for additional models shouldn't be too difficult, provided whatever provider you're considering exposes
 an API similar to OpenAI's. Look into the `gepetto/models` folder for inspiration, or open an issue if you can't figure
@@ -62,7 +110,8 @@ Gepetto also provides a CLI interface you can use to ask questions to the LLM di
 
 The following hotkeys are available:
 
-- Ask the model to explain the function: `Ctrl` + `Alt` + `H`
+- Ask the model to explain the function: `Ctrl` + `Alt` + `G`
+- Ask the model to add comments to the code: `Ctrl` + `Alt` + `K`
 - Request better names for the function's variables: `Ctrl` + `Alt` + `R`
 
 Initial testing shows that asking for better names works better if you ask for an explanation of the function first – I
@@ -90,7 +139,7 @@ The chosen locale must match the folder names in `gepetto/locales`. If the desir
 you can contribute to the project by adding it yourself! Create a new folder for the desired locale
 (ex: `gepetto/locales/de_DE/LC_MESSAGES/`), and open a new pull request with the updated `.po` file, which you can
 create by copying and editing `gepetto/locales/gepetto.pot` (replace all the lines starting with `msgstr` with the
-localized version).  
+localized version).
 
 ## Acknowledgements
 
