@@ -26,6 +26,8 @@ MESSAGES: list[dict] = [
             f"In the context of a reverse-engineering session, the user will switch from function to function a lot. "
             f"Between messages, don't assume that the function is still the same and always confirm it by checking the "
             f"current EA. \"This\" function or the \"current\" function always mean the one at the current EA.\n"
+            f"When encountering a symbol name like sub_401234 or off_415678, assume that the corresponding address is "
+            f"0x401234 or 0x415678 (respectively) without calling tools.\n"
             f"When asked to perform an operation (such as renaming something), don't ask for confirmation. Just do it!\n"
             f"Always refresh the disassembly view after making a change in the IDB (renaming, etc.), so it is shown to"
             f"the user (no need to mention when you do it).\n"
@@ -194,8 +196,6 @@ class GepettoCLI(ida_kernwin.cli_t):
                         ida_tools.get_disasm.handle_get_disasm_tc(tc, MESSAGES)
                     elif tc.function.name == "get_bytes":
                         ida_tools.get_bytes.handle_get_bytes_tc(tc, MESSAGES)
-                    elif tc.function.name == "get_callers":
-                        ida_tools.call_graph.handle_get_callers_tc(tc, MESSAGES)
                     elif tc.function.name == "declare_c_type":
                         ida_tools.declare_c_type.handle_declare_c_type_tc(tc, MESSAGES)
                     elif tc.function.name == "get_struct":
